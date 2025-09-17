@@ -15,8 +15,8 @@ def V(z: int, wl: float, rc: float):
 
 Zo = 50
 Load = [25,50,75,100]
-z = np.arange(0,5,1/100)
-wl = 0.3
+z = np.arange(0,2,1/100)
+wl = 0.6
 plt.figure(figsize=(10,6))
 
 for Zl in Load:
