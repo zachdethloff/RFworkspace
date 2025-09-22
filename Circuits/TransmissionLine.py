@@ -48,8 +48,8 @@ print('Plot has been saved')
 plt.figure(figsize=(10,6))
 
 R = 50 # Ohm Resistor
-C = 10e-12 # F Capacitor
-L = 1e-9 # H Inductor
+C = 5e-12 # F Capacitor
+L = 5e-9 # H Inductor
 wls = [300,30,3,0.3,0.1]
 
 for wl in wls:
@@ -59,6 +59,7 @@ for wl in wls:
     for x in z:
         vreal = np.real(V(x,wl,rc(Z_L,Zo)))
         vrange.append(vreal)
+    print("Load for " + str(f/1e9) + "GHz: " + str(Z_L))
     plt.plot(z,vrange,label=str(f)+"Hz")
     #print("VSWR for Impedance Load of " + str(Z_L) + " Ohms = " + str((1+np.abs(rc(Z_L,Zo)))/(1-np.abs(rc(Z_L,Zo)))) + "\n")
 plt.legend()
