@@ -28,6 +28,10 @@ def response_finder(fs: list,ftype: str, R: float=0, C: float=0,L: float=0) -> t
             Z_1 = 1j*w*L + Z_C
             Z_2 = R
             ctf = 1 - H(Z_1,Z_2)
+        elif ftype == 'CF':
+            Z_1 = 1j*w*L
+            Z_2 = R/(1+1j*w*R*C)
+            ctf = H(Z_1,Z_2)
         Hphase = np.angle(ctf)
         Hphases.append(Hphase * 180/np.pi)
         Hmag = np.abs(ctf)
@@ -39,9 +43,10 @@ c = 3e8 #m/s
 C = 1e-9 # Farads
 R = 50 # Ohms
 L = 1e-6 # H
-fs = [val*1e6 for val in np.arange(1,300,1)] # MHz
-fc = 1/(2*np.pi*R*C) # Hz
-print("Frequency Cutoff at " + str(round(fc,-6)/1e6) + " MHz")
+fs = [val*1e6 for val in np.arange(1,300,1)] # Hz
+Mfs = [f/1e6 for f in fs] #MHz
+fc = 1/(2*np.pi*R*C)/1e6 # Hz
+print(f"Frequency Cutoff at {fc:.1f} MHz")
 
 ############################################ 
 
@@ -53,7 +58,7 @@ Hmags, Hphases = response_finder(fs,'Low',R,C)
 
 plt.figure(figsize=(10,6))
 plt.title("Low Pass RC Filter Magnitude Response")
-plt.plot(fs,20*np.log10(Hmags))
+plt.plot(Mfs,20*np.log10(Hmags))
 plt.vlines(fc,20*np.log10(min(Hmags)),20*np.log10(max(Hmags)),colors='red', linestyles='solid')
 plt.xlabel('Frequency (MHz)')
 plt.ylabel('Magnitude Response (dB)')
@@ -63,7 +68,7 @@ print('Magnitude Response Plot Saved')
 
 plt.figure(figsize=(10,6))
 plt.title("Low Pass RC Filter Phase Response")
-plt.plot(fs,Hphases)
+plt.plot(Mfs,Hphases)
 plt.vlines(fc,min(Hphases),max(Hphases),colors='red', linestyles='solid')
 plt.xlabel("Frequency (MHz)")
 plt.ylabel('Phase Response (Deg)')
@@ -82,7 +87,7 @@ Hmags, Hphases = response_finder(fs,'High',R,C)
 
 plt.figure(figsize=(10,6))
 plt.title("High Pass RC Filter Magnitude Response")
-plt.plot(fs,20*np.log10(Hmags))
+plt.plot(Mfs,20*np.log10(Hmags))
 plt.vlines(fc,20*np.log10(min(Hmags)),20*np.log10(max(Hmags)),colors='red', linestyles='solid')
 plt.xlabel('Frequency (MHz)')
 plt.ylabel('Magnitude Response (dB)')
@@ -92,7 +97,7 @@ print('Magnitude Response Plot Saved')
 
 plt.figure(figsize=(10,6))
 plt.title("High Pass RC Filter Phase Response")
-plt.plot(fs,Hphases)
+plt.plot(Mfs,Hphases)
 plt.vlines(fc,min(Hphases),max(Hphases),colors='red', linestyles='solid')
 plt.xlabel("Frequency (MHz)")
 plt.ylabel('Phase Response (Deg)')
@@ -112,17 +117,17 @@ C = 10e-12 # F
 
 rez = 1/(np.sqrt(L*C))
 Q = rez*L/R
-f_o = int(rez/(2*np.pi))
+f_o = int(rez/(2*np.pi)/1e6)
 bw = R/L
-f_1 = (np.sqrt((R/(2*L))**2 + rez**2) - R/(2*L))/(2*np.pi)
-f_2 = (np.sqrt((R/(2*L))**2 + rez**2) + R/(2*L))/(2*np.pi)
+f_1 = (np.sqrt((R/(2*L))**2 + rez**2) - R/(2*L))/(2*np.pi)/1e6
+f_2 = (np.sqrt((R/(2*L))**2 + rez**2) + R/(2*L))/(2*np.pi)/1e6
 print(f"Quality Factor Q = {round(Q,2):.2f}")
 print("Central Frequency = " + str(f_o) + " MHZ")
 Hmags, Hphases = response_finder(fs,'Band',R,C,L)
 
 plt.figure(figsize=(10,6))
 plt.title("Band Pass RLC Filter Magnitude Response")
-plt.plot(fs,20*np.log10(Hmags))
+plt.plot(Mfs,20*np.log10(Hmags))
 plt.vlines(f_o,20*np.log10(min(Hmags)),20*np.log10(max(Hmags)),colors='red', linestyles='solid')
 plt.hlines(20*np.log10(max(Hmags)),f_1,f_2,colors='orange',linestyles='solid')
 plt.xlabel('Frequency (MHz)')
@@ -133,7 +138,7 @@ print('Magnitude Response Plot Saved')
 
 plt.figure(figsize=(10,6))
 plt.title("Band Pass RLC Filter Phase Response")
-plt.plot(fs,Hphases)
+plt.plot(Mfs,Hphases)
 plt.vlines(f_o,min(Hphases),max(Hphases),colors='red', linestyles='solid')
 plt.xlabel("Frequency (MHz)")
 plt.ylabel('Phase Response (Deg)')
@@ -151,7 +156,7 @@ Hmags, Hphases = response_finder(fs,'Tank',R,C,L)
 
 plt.figure(figsize=(10,6))
 plt.title("Band Stop RLC Filter Magnitude Response")
-plt.plot(fs,20*np.log10(Hmags))
+plt.plot(Mfs,20*np.log10(Hmags))
 plt.vlines(f_o,20*np.log10(min(Hmags)),20*np.log10(max(Hmags)),colors='red', linestyles='solid')
 plt.xlabel('Frequency (MHz)')
 plt.ylabel('Magnitude Response (dB)')
@@ -161,10 +166,44 @@ print('Magnitude Response Plot Saved')
 
 plt.figure(figsize=(10,6))
 plt.title("Band Stop RLC Filter Phase Response")
-plt.plot(fs,Hphases)
+plt.plot(Mfs,Hphases)
 plt.vlines(f_o,min(Hphases),max(Hphases),colors='red', linestyles='solid')
 plt.xlabel("Frequency (MHz)")
 plt.ylabel('Phase Response (Deg)')
 plt.savefig('BSphase.png', dpi=300, bbox_inches='tight')
+plt.close()
+print('Phase Response Plot Saved')
+
+###############################################
+
+# CHEBYSHEV FILTER - 2ND ORDER
+
+###############################################
+
+L = 56e-9
+C = 68e-12
+R = 50
+
+Hmags, Hphases = response_finder(fs,'CF',R,C,L)
+
+fc = 1/(2*np.pi*np.sqrt(L*C))/1e6 # MHz
+
+plt.figure(figsize=(10,6))
+plt.title("Chebyshev Filter Magnitude Response")
+plt.plot(Mfs,20*np.log10(Hmags))
+plt.vlines(fc,20*np.log10(min(Hmags)),20*np.log10(max(Hmags)),colors='red', linestyles='solid')
+plt.xlabel('Frequency (MHz)')
+plt.ylabel('Magnitude Response (dB)')
+plt.savefig('CFmag.png', dpi=300, bbox_inches='tight')
+plt.close()
+print('Magnitude Response Plot Saved')
+
+plt.figure(figsize=(10,6))
+plt.title("Chebysev Filter Phase Response")
+plt.plot(Mfs,Hphases)
+plt.vlines(fc,min(Hphases),max(Hphases),colors='red', linestyles='solid')
+plt.xlabel("Frequency (MHz)")
+plt.ylabel('Phase Response (Deg)')
+plt.savefig('CFphase.png', dpi=300, bbox_inches='tight')
 plt.close()
 print('Phase Response Plot Saved')
