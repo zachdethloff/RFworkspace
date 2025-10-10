@@ -2,207 +2,279 @@ from sarpy.io.phase_history.converter import open_phase_history
 import numpy as np
 import matplotlib.pyplot as plt
 import sarpy.processing
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta
+    
 
-def sar_reader(size = 'full'):
+class SARBackprojection:
+    def __init__(self, cphd_data, range_bins, sicd_params):
+        """
+        Initialize SAR Backprojection processor
+        
+        Args:
+            cphd_data: Complex phase history data (num_pulses, num_range_bins)
+            range_bins: Range values for each bin (meters)
+            sicd_params: Dictionary with SICD parameters
+        """
+        self.cphd = cphd_data
+        self.range_bins = range_bins
+        self.num_pulses, self.num_range_bins = cphd_data.shape
+        
+        # Extract SICD parameters
+        self.arp_poly_x = sicd_params['arp_poly_x']
+        self.arp_poly_y = sicd_params['arp_poly_y']
+        self.arp_poly_z = sicd_params['arp_poly_z']
+        self.center_freq = sicd_params['center_freq']
+        self.wavelength = 3e8 / self.center_freq
+        self.scp = sicd_params['scp']  # Scene center point
+        self.collect_start = sicd_params['collect_start']
+        self.collect_duration = sicd_params['collect_duration']
+        
+        # Compute time for each pulse
+        self.pulse_times = np.linspace(0, self.collect_duration, self.num_pulses)
+        
+        # Precompute sensor positions for all pulses
+        self.sensor_positions = self._compute_sensor_positions()
 
-    reader = open_phase_history('ICEYE_X34_CPHD_SLH_951662092_20251001T181929.cphd')
+    def sar_reader(self, size = 'full'):
 
-    print('reader type = {}'.format(type(reader)))  # see the explicit reader type
+        reader = open_phase_history('ICEYE_X34_CPHD_SLH_951662092_20251001T181929.cphd')
 
-    print('image size = {}'.format(reader.data_size))
+        print('reader type = {}'.format(type(reader)))  # see the explicit reader type
+
+        print('image size = {}'.format(reader.data_size))
 
 
-    signal_data = reader.read_signal_block()
-    signal_data = signal_data['spot_0_burst_0']
-    # Work with a tiny subset first
-    if size == 'full':
-        print(f"Image shape: {signal_data.shape}")
+        signal_data = reader.read_signal_block()
+        signal_data = signal_data['spot_0_burst_0']
+
+        range_to_pixel = np.load('range_to_pixel.npy')
+        print("Shape:", range_to_pixel.shape)
+
+        tree = ET.parse('ICEYE_X34_SICD_SLH_951662092_20251001T181932.xml')
+        root = tree.getroot()
+
+        # Namespace (important for SICD)
+        ns = {'sicd': 'urn:SICD:1.3.0'}
+
+        position_elem = root.find('.//sicd:Position', ns)
+
+        if position_elem is not None:
+            print("Position element found!")
+            
+            # Print all sub-elements to see structure
+            for child in position_elem:
+                print(f"Child tag: {child.tag}")
+                print(f"Child text: {child.text}")
+                
+                # If it's ARPPoly, dive deeper
+                if 'ARPPoly' in child.tag:
+                    print("\n=== ARPPoly Structure ===")
+                    for axis in child:  # X, Y, Z
+                        print(f"\nAxis: {axis.tag}")
+                        for coef in axis:
+                            exponent = coef.get('exponent1', '0')
+                            value = coef.text
+                            print(f"  Coef (t^{exponent}): {value}")
+        else:
+            print("Position element not found!")
+
+        # Alternative: Just print the entire Position section as text
+        print("\n=== Raw XML for Position ===")
+        position_str = ET.tostring(position_elem, encoding='unicode')
+        print(position_str)
+
+        # 2. Get center frequency
+        tx_freq = root.find('.//sicd:RadarCollection/sicd:TxFrequency/sicd:Min', ns)
+        center_freq = float(tx_freq.text)  # in Hz
+
+        # 3. Get timing information
+        collect_start = root.find('.//sicd:Timeline/sicd:CollectStart', ns).text
+        collect_duration = float(root.find('.//sicd:Timeline/sicd:CollectDuration', ns).text)
+        print(collect_start,collect_duration)
+
+        # 4. Get SCP (Scene Center Point)
+        scp_ecf = root.find('.//sicd:GeoData/sicd:SCP/sicd:ECF', ns)
+        scp_x = float(scp_ecf.find('sicd:X', ns).text)
+        scp_y = float(scp_ecf.find('sicd:Y', ns).text)
+        scp_z = float(scp_ecf.find('sicd:Z', ns).text)
+
+        print(f"Center Frequency: {center_freq/1e9} GHz")
+        print(f"SCP: [{scp_x}, {scp_y}, {scp_z}]")
+
         return signal_data
+        
+    def _compute_sensor_positions(self):
+        """Compute sensor position for each pulse using ARPPoly"""
+        positions = np.zeros((self.num_pulses, 3))
+        
+        for i, t in enumerate(self.pulse_times):
+            # Evaluate polynomial: pos = c0 + c1*t + c2*t^2 + ...
+            positions[i, 0] = np.polyval(self.arp_poly_x[::-1], t)  # X
+            positions[i, 1] = np.polyval(self.arp_poly_y[::-1], t)  # Y
+            positions[i, 2] = np.polyval(self.arp_poly_z[::-1], t)  # Z
+            
+        return positions
+    
+    def create_image_grid(self, image_size_m=1000, pixel_spacing_m=1.0):
+        """
+        Create image grid centered on SCP
+        
+        Args:
+            image_size_m: Size of image in meters (both dimensions)
+            pixel_spacing_m: Spacing between pixels in meters
+        
+        Returns:
+            X, Y, Z: 2D meshgrids of pixel positions in ECEF coordinates
+        """
+        n_pixels = int(image_size_m / pixel_spacing_m)
+        
+        # Create local coordinate offsets
+        x_local = np.linspace(-image_size_m/2, image_size_m/2, n_pixels)
+        y_local = np.linspace(-image_size_m/2, image_size_m/2, n_pixels)
+        X_local, Y_local = np.meshgrid(x_local, y_local)
+        
+        # Get average sensor position to define image plane orientation
+        avg_sensor_pos = np.mean(self.sensor_positions, axis=0)
+        
+        # Vector from SCP to sensor
+        look_vec = avg_sensor_pos - self.scp
+        look_vec = look_vec / np.linalg.norm(look_vec)
+        
+        # Create orthogonal basis for image plane
+        # Ground plane normal (approximate)
+        ground_normal = self.scp / np.linalg.norm(self.scp)
+        
+        # Range direction (perpendicular to velocity, in ground plane)
+        range_dir = np.cross(ground_normal, look_vec)
+        range_dir = range_dir / np.linalg.norm(range_dir)
+        
+        # Azimuth direction
+        az_dir = np.cross(range_dir, ground_normal)
+        az_dir = az_dir / np.linalg.norm(az_dir)
+        
+        # Build 3D grid
+        X_ecef = self.scp[0] + X_local[..., np.newaxis] * az_dir[0] + Y_local[..., np.newaxis] * range_dir[0]
+        Y_ecef = self.scp[1] + X_local[..., np.newaxis] * az_dir[1] + Y_local[..., np.newaxis] * range_dir[1]
+        Z_ecef = self.scp[2] + X_local[..., np.newaxis] * az_dir[2] + Y_local[..., np.newaxis] * range_dir[2]
+        
+        return X_ecef.squeeze(), Y_ecef.squeeze(), Z_ecef.squeeze()
+    
+    def backproject(self, image_grid, pulse_subset=None):
+        """
+        Perform backprojection on image grid
+        
+        Args:
+            image_grid: Tuple of (X, Y, Z) meshgrids in ECEF coordinates
+            pulse_subset: Optional indices of pulses to use (for faster processing)
+        
+        Returns:
+            Complex image (n_y, n_x)
+        """
+        X_grid, Y_grid, Z_grid = image_grid
+        image = np.zeros_like(X_grid, dtype=complex)
+        
+        # Use all pulses or subset
+        if pulse_subset is None:
+            pulse_indices = range(self.num_pulses)
+        else:
+            pulse_indices = pulse_subset
+        
+        print(f"Backprojecting {len(pulse_indices)} pulses...")
+        
+        # Main backprojection loop
+        for pulse_idx in pulse_indices:
+            if pulse_idx % 1000 == 0:
+                print(f"  Processing pulse {pulse_idx}/{len(pulse_indices)}")
+            
+            # Get sensor position for this pulse
+            sensor_pos = self.sensor_positions[pulse_idx]
+            
+            # Compute range from sensor to each pixel
+            dx = X_grid - sensor_pos[0]
+            dy = Y_grid - sensor_pos[1]
+            dz = Z_grid - sensor_pos[2]
+            ranges = np.sqrt(dx**2 + dy**2 + dz**2)
+            
+            # Find corresponding range bin for each pixel
+            # Use linear interpolation
+            range_indices = np.interp(ranges, self.range_bins, 
+                                     np.arange(len(self.range_bins)))
+            
+            # Get complex values from phase history
+            # Clip indices to valid range
+            valid_mask = (range_indices >= 0) & (range_indices < self.num_range_bins - 1)
+            
+            # Interpolate phase history values
+            for i in range(X_grid.shape[0]):
+                for j in range(X_grid.shape[1]):
+                    if valid_mask[i, j]:
+                        idx = range_indices[i, j]
+                        idx_low = int(np.floor(idx))
+                        idx_high = int(np.ceil(idx))
+                        alpha = idx - idx_low
+                        
+                        # Linear interpolation
+                        if idx_high < self.num_range_bins:
+                            val = (1 - alpha) * self.cphd[pulse_idx, idx_low] + \
+                                  alpha * self.cphd[pulse_idx, idx_high]
+                        else:
+                            val = self.cphd[pulse_idx, idx_low]
+                        
+                        # Apply phase correction for range
+                        phase_correction = np.exp(-1j * 4 * np.pi * ranges[i, j] / self.wavelength)
+                        image[i, j] += val * phase_correction
+        
+        return image
 
 
-    else:
-        azimuth_subset = 10000  # Just 1000 azimuth lines
-        range_subset = 500     # Just 500 range bins
-
-        # Extract small chip from the middle
-        az_start = (signal_data.shape[0] - azimuth_subset) // 2
-        range_start = signal_data.shape[1] // 2
-
-        chip = signal_data[az_start:az_start+azimuth_subset, 
-                                range_start:range_start+range_subset]
-
-        print(f"Large chip shape: {chip.shape}")
-        print(f"Data size reduced from {signal_data.nbytes/1e9:.2f} GB to {chip.nbytes/1e6:.2f} MB")
-        return chip
-
-
-def main(type = 'basic'):
-    image_data = sar_reader()
-    if type == 'basic':
-        # Use the FULL data without autofocus
-        full_data = image_data  # shape: (81066, 26496)
-
-        # Just do the azimuth FFT - that's the core of SAR processing
-        image = np.fft.fftshift(np.fft.fft(full_data, axis=0), axes=0)
-
-        # Convert to displayable form
-        image_mag = np.abs(image)
-        image_db = 20*np.log10(image_mag + 1e-10)
-
-        # Display a subset (full image too large)
-        plt.figure(figsize=(15, 10))
-        subset = image_db[35000:40000, 10000:15000]  # 5000x5000 region
-        plt.imshow(subset, cmap='gray', aspect='auto',
-                vmin=np.percentile(subset, 2), 
-                vmax=np.percentile(subset, 98))
-        plt.colorbar(label='dB')
-        plt.title('SAR Image - Basic FFT Processing')
-        plt.xlabel('Range Bin')
-        plt.ylabel('Azimuth Bin')
-        plt.savefig('simple_process.png',dpi=300)
-    else:
-        chip = image_data
-        range_power = np.mean(np.abs(chip)**2, axis=0)  # Average power per range bin
-
-        # Plot to see where targets are
-        plt.figure(figsize=(12, 4))
-        plt.plot(range_power)
-        plt.title('Average Power vs Range Bin')
-        plt.xlabel('Range Bin')
-        plt.ylabel('Power')
-        plt.yscale('log')
-        plt.savefig('avg_power.png',dpi=300,bbox_inches='tight')
-
-        # Find the strongest target
-        strongest_range_bin = np.argmax(range_power)
-        print(f"Strongest return at range bin: {strongest_range_bin}")
-
-        # Now look at the phase history for this strong target
-        target_samples = chip[:, strongest_range_bin]
-        magnitude = np.abs(target_samples)
-        phase = np.angle(target_samples)
-
-        # Check if this range bin actually has a strong target
-        print(f"Target samples magnitude - min: {np.min(magnitude):.2f}, max: {np.max(magnitude):.2f}, mean: {np.mean(magnitude):.2f}")
-        print(f"Signal-to-noise estimate: {np.max(magnitude)/np.mean(magnitude):.2f}")
-
-        # Check the magnitude variation
-        plt.figure(figsize=(12, 4))
-        plt.plot(magnitude)
-        plt.title('Target Magnitude vs Azimuth Sample')
-        plt.ylabel('Magnitude')
-        plt.xlabel('Azimuth Sample')
-        plt.grid(True)
-        plt.savefig('tmag.png',dpi=300,bbox_inches='tight')
-
-        # Unwrap phase to see the true quadratic curve
-        phase_unwrapped = np.unwrap(phase)
-
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 8))
-
-        ax1.plot(magnitude)
-        ax1.set_title(f'Magnitude - Range Bin {strongest_range_bin}')
-        ax1.set_ylabel('Magnitude')
-
-        ax2.plot(phase)
-        ax2.set_title('Wrapped Phase')
-        ax2.set_ylabel('Phase (radians)')
-
-        ax3.plot(phase_unwrapped)
-        ax3.set_title('Unwrapped Phase (should show quadratic curve)')
-        ax3.set_ylabel('Phase (radians)')
-        ax3.set_xlabel('Azimuth Sample')
-
-        plt.tight_layout()
-        plt.show()
-        fig.savefig('plots.png',dpi=300,bbox_inches='tight')
-
-        # Calculate the Doppler rate (linear phase slope)
-        doppler_rate = np.polyfit(np.arange(len(phase_unwrapped)), phase_unwrapped, 1)[0]
-        print(f"Doppler rate: {doppler_rate:.4f} radians/sample")
-        print(f"Doppler frequency: {doppler_rate/(2*np.pi):.4f} cycles/sample")
-
-        # Remove the linear trend to see if there's residual quadratic
-        phase_detrended = phase_unwrapped - doppler_rate * np.arange(len(phase_unwrapped))
-
-        plt.figure(figsize=(12, 4))
-        plt.plot(phase_detrended)
-        plt.title('Phase after removing linear trend (residual should show target defocus)')
-        plt.ylabel('Phase (radians)')
-        plt.xlabel('Azimuth Sample')
-        plt.savefig('Phase_trend.png',dpi=300,bbox_inches='tight')
-
-
-        # Fit a quadratic to the detrended phase
-        n_samples = np.arange(len(phase_detrended))
-        coeffs = np.polyfit(n_samples, phase_detrended, 2)
-        a, b, c = coeffs  # ax² + bx + c
-
-        print(f"Quadratic coefficient (a): {a:.6f}")
-        print(f"Linear coefficient (b): {b:.6f}")  
-        print(f"Constant (c): {c:.6f}")
-        print(f"Peak location: {-b/(2*a):.1f} samples")
-
-        # Plot the fit
-        phase_fit = a*n_samples**2 + b*n_samples + c
-
-        # Compare with and without autofocus
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-
-        plt.figure(figsize=(12, 6))
-        plt.plot(n_samples, phase_detrended, label='Actual phase', alpha=0.7)
-        plt.plot(n_samples, phase_fit, 'r--', label='Quadratic fit', linewidth=2)
-        plt.title('Quadratic Phase Fit')
-        plt.xlabel('Azimuth Sample')
-        plt.ylabel('Phase (radians)')
-        plt.legend()
-        plt.grid(True)
-        plt.savefig('fit_and_detrend.png',dpi=300,bbox_inches='tight')
-
-        # The azimuth matched filter is the conjugate of this phase
-        Ka = -2 * a  # FM rate
-        print(f"\nAzimuth FM rate (Ka): {Ka:.6f} radians/sample²")
-
-        # CORRECTED FOCUSING PROCEDURE
-
-        # Step 1: Remove the linear Doppler trend FIRST
-        n_samples = np.arange(len(target_samples))
-        linear_phase_correction = np.exp(-1j * doppler_rate * n_samples)
-        detrended_samples = target_samples * linear_phase_correction
-
-        # Step 2: Now apply quadratic matched filter to detrended data
-        n_center = -b/(2*a)
-        quadratic_phase = a * (n_samples - n_center)**2
-        matched_filter = np.exp(-1j * quadratic_phase)  # Conjugate for compression
-
-        focused_samples = detrended_samples * matched_filter
-
-        # Step 3: FFT and compare
-        unfocused_fft = np.fft.fftshift(np.fft.fft(target_samples))
-        focused_fft = np.fft.fftshift(np.fft.fft(focused_samples))
-
-        unfocused_mag = np.abs(unfocused_fft)
-        focused_mag = np.abs(focused_fft)
-
-        # Plot in dB scale for better visibility
-        unfocused_db = 20*np.log10(unfocused_mag + 1e-10)
-        focused_db = 20*np.log10(focused_mag + 1e-10)
-
-
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-
-        ax1.plot(unfocused_db)
-        ax1.set_title('Unfocused Target')
-        ax1.set_ylabel('Magnitude (dB)')
-        ax1.set_ylim([np.max(unfocused_db)-40, np.max(unfocused_db)+5])
-        ax1.grid(True)
-
-        ax2.plot(focused_db)
-        ax2.set_title('Focused Target (should show sharp peak at center)')
-        ax2.set_ylabel('Magnitude (dB)')
-        ax2.set_ylim([np.max(focused_db)-40, np.max(focused_db)+5])
-        ax2.set_xlabel('Azimuth Bin')
-        ax2.grid(True)
-
+# Example usage
 if __name__ == "__main__":
-    main()
+    # Load your data
+    cphd_data = np.load('cphd_data.npy')  # Shape: (28318, 34168)
+    range_bins = np.load('range_to_pixel.npy')  # Range values in meters
+    
+    # SICD parameters from your XML
+    sicd_params = {
+        'arp_poly_x': np.array([2478849.60868615, -572.7557825700707, -1.892184847718151,
+                                -2.518375956724047e-05, 2.475272494045103e-07,
+                                -4.418402022842363e-09, 1.0048657958395474e-09,
+                                -1.2315954197005195e-10, 6.2764554779468074e-12]),
+        'arp_poly_y': np.array([4902985.249702282, -4735.895094222927, -3.016243420162082,
+                                0.0010818181782065305, 3.207745334016667e-07,
+                                -6.09022185265171e-09, 1.388446627818461e-09,
+                                -1.759891919990173e-10, 9.167253767397782e-12]),
+        'arp_poly_z': np.array([4048509.5377419027, 6073.364848091458, -2.547760010476697,
+                                -0.001268370320138367, 3.1657466936016516e-07,
+                                -1.2541545425691035e-08, 3.0327964266719605e-09,
+                                -3.821507398468962e-10, 1.9914932572697033e-11]),
+        'center_freq': 9.5e9,  # 9.5 GHz
+        'scp': np.array([2604951.366402925, 4444849.345567337, 3749150.110799195]),
+        'collect_start': '2025-10-01T18:19:32.122111Z',
+        'collect_duration': 4.521394176008343
+    }
+    
+    # Initialize backprojection
+    bp = SARBackprojection(cphd_data, range_bins, sicd_params)
+    
+    # Create image grid (start small for testing)
+    print("Creating image grid...")
+    image_grid = bp.create_image_grid(image_size_m=500, pixel_spacing_m=2.0)
+    
+    # Perform backprojection (use subset of pulses for testing)
+    print("Starting backprojection...")
+    pulse_subset = range(0, 28318, 10)  # Use every 10th pulse for faster testing
+    image = bp.backproject(image_grid, pulse_subset=pulse_subset)
+    
+    # Display result
+    plt.figure(figsize=(10, 8))
+    plt.imshow(np.abs(image), cmap='gray', aspect='auto')
+    plt.colorbar(label='Magnitude')
+    plt.title('SAR Image - Backprojection Result')
+    plt.xlabel('Range')
+    plt.ylabel('Azimuth')
+    plt.tight_layout()
+    plt.savefig('sar_backprojection_result.png', dpi=150)
+    plt.show()
+    
+    print("Backprojection complete!")
