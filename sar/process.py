@@ -4,10 +4,104 @@ import matplotlib.pyplot as plt
 import sarpy.processing
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+import time
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from multiprocessing import cpu_count
+
+
+def sar_reader(
+        cphd,sicd,rtp
+):
+
+    range_to_pixel = np.load(rtp)
+
+    tree = ET.parse(sicd)
+    root = tree.getroot()
+
+    # Namespace (important for SICD)
+    ns = {'sicd': 'urn:SICD:1.3.0'}
+
+    position_elem = root.find('.//sicd:Position', ns)
+
+    arp_poly_x = []
+    arp_poly_y = []
+    arp_poly_z = []
+
+    if position_elem is not None:
+        print("Position element found!")
+        
+        # Print all sub-elements to see structure
+        for child in position_elem:
+            print(f"Child tag: {child.tag}")
+            print(f"Child text: {child.text}")
+            
+            # If it's ARPPoly, dive deeper
+            if 'ARPPoly' in child.tag:
+                print("\n=== ARPPoly Structure ===")
+                for axis in child:  # X, Y, Z
+                    coord = axis.tag[-1]
+                    print(f"\nAxis: {coord}")
+                    for coef in axis:
+                        #exponent = coef.get('exponent1', '0')
+                        value = coef.text
+                        if coord == 'X':
+                            arp_poly_x.append(value)
+                        elif coord =='Y':
+                            arp_poly_y.append(value)
+                        else:
+                            arp_poly_z.append(value)
+    else:
+        print("Position element not found!")
+
+    print(f"X:{len(arp_poly_x)} Y:{len(arp_poly_y)} Z:{len(arp_poly_z)}")
+    print("If previous numbers don't match, quit now!")
+    time.sleep(5)
+
+    # 2. Get center frequency
+    tx_freq = root.find('.//sicd:RadarCollection/sicd:TxFrequency/sicd:Min', ns)
+    center_freq = float(tx_freq.text)  # in Hz
+
+    # 3. Get timing information
+    collect_start = root.find('.//sicd:Timeline/sicd:CollectStart', ns).text.replace('T',' ')
+    collect_duration = float(root.find('.//sicd:Timeline/sicd:CollectDuration', ns).text)
+    print(f'Image collection started at:  {collect_start.replace('Z','')} UTC with a duration of: {collect_duration:.2f} seconds\n')
+
+    # 4. Get SCP (Scene Center Point)
+    scp_ecf = root.find('.//sicd:GeoData/sicd:SCP/sicd:ECF', ns)
+    scp_x = float(scp_ecf.find('sicd:X', ns).text)
+    scp_y = float(scp_ecf.find('sicd:Y', ns).text)
+    scp_z = float(scp_ecf.find('sicd:Z', ns).text)
+
+    print('Major Image Parameters\n')
+
+    print(f"Center Frequency: {center_freq/1e9} GHz")
+    print(f"SCP: [{scp_x}, {scp_y}, {scp_z}]")
+
+    params = {
+        'arp_poly_x' : np.array(arp_poly_x),
+        'arp_poly_y' : np.array(arp_poly_y),
+        'arp_poly_z' : np.array(arp_poly_z),
+        'center_freq' : center_freq,
+        'scp' : np.array([scp_x,scp_y,scp_z]),
+        'collection_start' : collect_start,
+        'collection_duration' : collect_duration
+    }
+
+    reader = open_phase_history(cphd)
+
+    print('reader type = {}'.format(type(reader)))  # see the explicit reader type
+
+    print('image size = {}\n'.format(reader.data_size))
+
+
+    signal_data = reader.read_signal_block()
+    signal_data = signal_data['spot_0_burst_0']
+
+    return signal_data, params, range_to_pixel
     
 
 class SARBackprojection:
-    def __init__(self, cphd_data, range_bins, sicd_params):
+    def __init__(self, cphd_data, sicd_params, range_bins):
         """
         Initialize SAR Backprojection processor
         
@@ -21,88 +115,20 @@ class SARBackprojection:
         self.num_pulses, self.num_range_bins = cphd_data.shape
         
         # Extract SICD parameters
-        self.arp_poly_x = sicd_params['arp_poly_x']
-        self.arp_poly_y = sicd_params['arp_poly_y']
-        self.arp_poly_z = sicd_params['arp_poly_z']
+        self.arp_poly_x = sicd_params['arp_poly_x'].astype(float)
+        self.arp_poly_y = sicd_params['arp_poly_y'].astype(float)
+        self.arp_poly_z = sicd_params['arp_poly_z'].astype(float)
         self.center_freq = sicd_params['center_freq']
         self.wavelength = 3e8 / self.center_freq
         self.scp = sicd_params['scp']  # Scene center point
-        self.collect_start = sicd_params['collect_start']
-        self.collect_duration = sicd_params['collect_duration']
+        self.collect_start = sicd_params['collection_start']
+        self.collect_duration = sicd_params['collection_duration']
         
         # Compute time for each pulse
         self.pulse_times = np.linspace(0, self.collect_duration, self.num_pulses)
         
         # Precompute sensor positions for all pulses
         self.sensor_positions = self._compute_sensor_positions()
-
-    def sar_reader(self, size = 'full'):
-
-        reader = open_phase_history('ICEYE_X34_CPHD_SLH_951662092_20251001T181929.cphd')
-
-        print('reader type = {}'.format(type(reader)))  # see the explicit reader type
-
-        print('image size = {}'.format(reader.data_size))
-
-
-        signal_data = reader.read_signal_block()
-        signal_data = signal_data['spot_0_burst_0']
-
-        range_to_pixel = np.load('range_to_pixel.npy')
-        print("Shape:", range_to_pixel.shape)
-
-        tree = ET.parse('ICEYE_X34_SICD_SLH_951662092_20251001T181932.xml')
-        root = tree.getroot()
-
-        # Namespace (important for SICD)
-        ns = {'sicd': 'urn:SICD:1.3.0'}
-
-        position_elem = root.find('.//sicd:Position', ns)
-
-        if position_elem is not None:
-            print("Position element found!")
-            
-            # Print all sub-elements to see structure
-            for child in position_elem:
-                print(f"Child tag: {child.tag}")
-                print(f"Child text: {child.text}")
-                
-                # If it's ARPPoly, dive deeper
-                if 'ARPPoly' in child.tag:
-                    print("\n=== ARPPoly Structure ===")
-                    for axis in child:  # X, Y, Z
-                        print(f"\nAxis: {axis.tag}")
-                        for coef in axis:
-                            exponent = coef.get('exponent1', '0')
-                            value = coef.text
-                            print(f"  Coef (t^{exponent}): {value}")
-        else:
-            print("Position element not found!")
-
-        # Alternative: Just print the entire Position section as text
-        print("\n=== Raw XML for Position ===")
-        position_str = ET.tostring(position_elem, encoding='unicode')
-        print(position_str)
-
-        # 2. Get center frequency
-        tx_freq = root.find('.//sicd:RadarCollection/sicd:TxFrequency/sicd:Min', ns)
-        center_freq = float(tx_freq.text)  # in Hz
-
-        # 3. Get timing information
-        collect_start = root.find('.//sicd:Timeline/sicd:CollectStart', ns).text
-        collect_duration = float(root.find('.//sicd:Timeline/sicd:CollectDuration', ns).text)
-        print(collect_start,collect_duration)
-
-        # 4. Get SCP (Scene Center Point)
-        scp_ecf = root.find('.//sicd:GeoData/sicd:SCP/sicd:ECF', ns)
-        scp_x = float(scp_ecf.find('sicd:X', ns).text)
-        scp_y = float(scp_ecf.find('sicd:Y', ns).text)
-        scp_z = float(scp_ecf.find('sicd:Z', ns).text)
-
-        print(f"Center Frequency: {center_freq/1e9} GHz")
-        print(f"SCP: [{scp_x}, {scp_y}, {scp_z}]")
-
-        return signal_data
         
     def _compute_sensor_positions(self):
         """Compute sensor position for each pulse using ARPPoly"""
@@ -160,7 +186,7 @@ class SARBackprojection:
         
         return X_ecef.squeeze(), Y_ecef.squeeze(), Z_ecef.squeeze()
     
-    def backproject(self, image_grid, pulse_subset=None):
+    def backproject(self, image_grid, pulse_subset=None, n_workers=4, use_process=False):
         """
         Perform backprojection on image grid
         
@@ -179,8 +205,38 @@ class SARBackprojection:
             pulse_indices = range(self.num_pulses)
         else:
             pulse_indices = pulse_subset
+
+        if n_workers is None:
+            n_workers = cpu_count()
         
-        print(f"Backprojecting {len(pulse_indices)} pulses...")
+        print(f"Backprojecting {len(pulse_indices)} pulses with {n_workers} workers...")
+        print(f"Method is {'multiprocessing' if use_process else 'multithreading'}")
+
+        chunk_size = max(1, len(pulse_indices) // (n_workers * 4))
+        pulse_chunks = [pulse_indices[i:i+chunk_size] 
+                       for i in range(0, len(pulse_indices), chunk_size)]
+        
+        # Choose executor type
+        ExecutorClass = ProcessPoolExecutor if use_process else ThreadPoolExecutor
+        
+        # Process chunks in parallel
+        with ExecutorClass(max_workers=n_workers) as executor:
+            futures = [executor.submit(self.process_pulse_chunk, 
+                                      chunk, X_grid, Y_grid, Z_grid) 
+                      for chunk in pulse_chunks]
+            
+            # Collect results and accumulate
+            for i, future in enumerate(futures):
+                chunk_image = future.result()
+                image += chunk_image
+                if (i + 1) % max(1, len(futures) // 10) == 0:
+                    print(f"  Completed {i+1}/{len(futures)} chunks")
+
+        return image
+
+    def process_pulse_chunk(self, pulse_indices, X_grid, Y_grid, Z_grid):
+
+        partial_image = np.zeros_like(X_grid, dtype=complex)
         
         # Main backprojection loop
         for pulse_idx in pulse_indices:
@@ -223,48 +279,31 @@ class SARBackprojection:
                         
                         # Apply phase correction for range
                         phase_correction = np.exp(-1j * 4 * np.pi * ranges[i, j] / self.wavelength)
-                        image[i, j] += val * phase_correction
+                        partial_image[i, j] += val * phase_correction
         
-        return image
+        return partial_image
 
 
 # Example usage
 if __name__ == "__main__":
     # Load your data
-    cphd_data = np.load('cphd_data.npy')  # Shape: (28318, 34168)
-    range_bins = np.load('range_to_pixel.npy')  # Range values in meters
-    
-    # SICD parameters from your XML
-    sicd_params = {
-        'arp_poly_x': np.array([2478849.60868615, -572.7557825700707, -1.892184847718151,
-                                -2.518375956724047e-05, 2.475272494045103e-07,
-                                -4.418402022842363e-09, 1.0048657958395474e-09,
-                                -1.2315954197005195e-10, 6.2764554779468074e-12]),
-        'arp_poly_y': np.array([4902985.249702282, -4735.895094222927, -3.016243420162082,
-                                0.0010818181782065305, 3.207745334016667e-07,
-                                -6.09022185265171e-09, 1.388446627818461e-09,
-                                -1.759891919990173e-10, 9.167253767397782e-12]),
-        'arp_poly_z': np.array([4048509.5377419027, 6073.364848091458, -2.547760010476697,
-                                -0.001268370320138367, 3.1657466936016516e-07,
-                                -1.2541545425691035e-08, 3.0327964266719605e-09,
-                                -3.821507398468962e-10, 1.9914932572697033e-11]),
-        'center_freq': 9.5e9,  # 9.5 GHz
-        'scp': np.array([2604951.366402925, 4444849.345567337, 3749150.110799195]),
-        'collect_start': '2025-10-01T18:19:32.122111Z',
-        'collect_duration': 4.521394176008343
-    }
+    cphd_file = 'ICEYE_X33_CPHD_SLF_951651468_20250927T164328.cphd'  # Shape: (28318, 34168)
+    range_file = 'range_to_pixel.npy' # Range values in meters
+    sicd = 'ICEYE_X33_SICD_SLF_951651468_20250927T164329.xml'
+
+    cphd_data,sicd_params,range_bins = sar_reader(cphd_file,sicd,range_file)
     
     # Initialize backprojection
-    bp = SARBackprojection(cphd_data, range_bins, sicd_params)
-    
+    bp = SARBackprojection(cphd_data, sicd_params, range_bins)
+
     # Create image grid (start small for testing)
     print("Creating image grid...")
     image_grid = bp.create_image_grid(image_size_m=500, pixel_spacing_m=2.0)
     
     # Perform backprojection (use subset of pulses for testing)
     print("Starting backprojection...")
-    pulse_subset = range(0, 28318, 10)  # Use every 10th pulse for faster testing
-    image = bp.backproject(image_grid, pulse_subset=pulse_subset)
+    pulse_subset = range(0, 28318, 5)  # Use every 10th pulse for faster testing
+    image = bp.backproject(image_grid, n_workers=3, use_process=False)
     
     # Display result
     plt.figure(figsize=(10, 8))
