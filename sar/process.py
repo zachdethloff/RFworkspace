@@ -96,13 +96,17 @@ def sar_reader(
         'arp_poly_x' : np.array(arp_poly_x),
         'arp_poly_y' : np.array(arp_poly_y),
         'arp_poly_z' : np.array(arp_poly_z),
+
         'center_freq' : center_freq,
         'scp' : np.array([scp_x,scp_y,scp_z]),
         'collection_start' : collect_start,
         'collection_duration' : collect_duration,
         'scp_time' : scp_elem,
         'row_uvect' : row_uvect,
-        'col_uvect' : col_uvect
+        'col_uvect' : col_uvect,
+        'arp_pos_scp': np.array([2477545.1105631641, 4892263.4225086533, 4062226.5405864608]),
+        'arp_vel_scp': np.array([-581.31147127091765, -4749.5161187972426, 6061.8259874043051]),
+        'arp_acc_scp': np.array([-3.7846966040588255, -6.0177938753231066, -5.1127063330333966])
     }
 
     reader = open_phase_history(cphd)
@@ -144,6 +148,9 @@ class SARBackprojection:
         self.scp_time = sicd_params['scp_time']
         self.row_uvect = sicd_params['row_uvect']
         self.col_uvect = sicd_params['col_uvect']
+        self.arp_pos = sicd_params['arp_pos_scp']
+        self.arp_vel = sicd_params['arp_vel_scp']
+        self.arp_acc = sicd_params['arp_acc_scp']
         
         # Compute time for each pulse
         self.pulse_times = np.linspace(0, self.collect_duration, self.num_pulses)
@@ -159,20 +166,48 @@ class SARBackprojection:
         print(f"Computed range to SCP: {range_to_scp:.1f} m")
         print(f"Range bins span: {range_bins[0]:.1f} to {range_bins[-1]:.1f} m")
         print(f"Middle range bin: {range_bins[len(range_bins)//2]:.1f} m")
-        print(f"Expected from SICD SlantRange: ???")  # Check your SICD XML
+
+        scp_time = 2.2606971263885498
+        t_rel = scp_time - self.scp_time  # Should be 0!
+        print('Relative T: ', t_rel)
+
+        pos_x = np.polyval(self.arp_poly_x[::-1], t_rel)
+        pos_y = np.polyval(self.arp_poly_y[::-1], t_rel)
+        pos_z = np.polyval(self.arp_poly_z[::-1], t_rel)
+
+        print(f"ARPPoly at t=0: [{pos_x}, {pos_y}, {pos_z}]")
+        print(f"SCPCOA ARPPos:  [2477545.11, 4892263.42, 4062226.54]")
+        '''
+
+        **These should match!** If they don't, the polynomial coefficients might be in a different order or there's a different time reference.
+
+        ## IPP Timing Issue
+
+        Your IPPPoly shows:
+        '''
+        # IPP(t) = 0.0 + 6261.785 * t
         
     def _compute_sensor_positions(self):
         """Compute sensor position for each pulse using ARPPoly"""
         positions = np.zeros((self.num_pulses, 3))
-        
-        for i, t in enumerate(self.pulse_times):
-            # Evaluate polynomial: pos = c0 + c1*t + c2*t^2 + ...
 
-            relt = t - self.scp_time
-            positions[i, 0] = np.polyval(self.arp_poly_x[::-1], relt)  # X
-            positions[i, 1] = np.polyval(self.arp_poly_y[::-1], relt)  # Y
-            positions[i, 2] = np.polyval(self.arp_poly_z[::-1], relt)  # Z
+        if 'arp_pos_scp' in sicd_params.keys():
             
+            # Use Taylor series for each pulse
+            for i, t in enumerate(self.pulse_times):
+                dt = t - self.scp_time
+                positions[i] = self.arp_pos + self.arp_vel * dt + 0.5 * self.arp_acc * dt**2
+        else:
+
+            
+            for i, t in enumerate(self.pulse_times):
+                # Evaluate polynomial: pos = c0 + c1*t + c2*t^2 + ...
+
+                relt = t - self.scp_time
+                positions[i, 0] = np.polyval(self.arp_poly_x[::-1], relt)  # X
+                positions[i, 1] = np.polyval(self.arp_poly_y[::-1], relt)  # Y
+                positions[i, 2] = np.polyval(self.arp_poly_z[::-1], relt)  # Z
+                
         return positions
     
     def create_image_grid(self, image_size_m=1000, pixel_spacing_m=1.0):
