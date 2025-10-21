@@ -215,6 +215,7 @@ class SARBackprojection:
         positions = np.zeros((self.num_pulses, 3)) # Position matrix for each pulse
 
         if 'arp_pos_scp' in self.sicd_params.keys():
+            print("Taylor Approximation Method Selected")
             
             # Taylor Series approximation of each pulse
             for i, t in enumerate(self.pulse_times):
@@ -348,32 +349,48 @@ class SARBackprojection:
             
             # Find corresponding range bin for each pixel
             # Use linear interpolation
-            range_indices = np.interp(ranges, self.range_bins, 
+            range_indices = np.interp(ranges.ravel(), self.range_bins, 
                                      np.arange(len(self.range_bins)))
+            range_indices = range_indices.reshape(ranges.shape)
             
+
             # Get complex values from phase history
             # Clip indices to valid range
             valid_mask = (range_indices >= 0) & (range_indices < self.num_range_bins - 1)
+
+            idx_low = np.floor(range_indices).astype(int)
+            idx_high = np.minimum(np.ceil(range_indices).astype(int), range_indices - 1).astype(int)
+            alpha = range_indices - idx_low
+
+            low_interp = self.cphd[pulse_idx, idx_low]
+            high_interp = self.cphd[pulse_idx, idx_high]
+            val = (1 - alpha)*low_interp + alpha*high_interp
+
+            val = val * valid_mask
+
+            phase_correction = np.exp(-1j * 4 * np.pi * ranges / self.wavelength)
+            partial_image += val * phase_correction
             
             # Interpolate phase history values
-            for i in range(X_grid.shape[0]):
-                for j in range(X_grid.shape[1]):
-                    if valid_mask[i, j]:
-                        idx = range_indices[i, j]
-                        idx_low = int(np.floor(idx))
-                        idx_high = int(np.ceil(idx))
-                        alpha = idx - idx_low
+            # for i in range(X_grid.shape[0]):
+            #     for j in range(X_grid.shape[1]):
+            #         if valid_mask[i, j]:
+            #             idx = range_indices[i, j]
+            #             idx_low = int(np.floor(idx))
+            #             idx_high = int(np.ceil(idx))
+            #             alpha = idx - idx_low
                         
-                        # Linear interpolation
-                        if idx_high < self.num_range_bins:
-                            val = (1 - alpha) * self.cphd[pulse_idx, idx_low] + \
-                                  alpha * self.cphd[pulse_idx, idx_high]
-                        else:
-                            val = self.cphd[pulse_idx, idx_low]
+            #             # Linear interpolation
+            #             if idx_high < self.num_range_bins:
+            #                 val = (1 - alpha) * self.cphd[pulse_idx, idx_low] + \
+            #                       alpha * self.cphd[pulse_idx, idx_high]
+            #             else:
+            #                 val = self.cphd[pulse_idx, idx_low]
                         
-                        # Apply phase correction for range
-                        phase_correction = np.exp(-1j * 4 * np.pi * ranges[i, j] / self.wavelength)
-                        partial_image[i, j] += val * phase_correction
+            #             # Apply phase correction for range
+            #             phase_correction = np.exp(-1j * 4 * np.pi * ranges[i, j] / self.wavelength)
+            #             partial_image[i, j] += val * phase_correction
+            
         # print("\nRange check:")
         # print(f"  Range bins: {self.range_bins[0]:.1f} to {self.range_bins[-1]:.1f} m")
         # print(f"  Computed ranges to grid: {np.min(ranges):.1f} to {np.max(ranges):.1f} m")
@@ -394,7 +411,7 @@ if __name__ == "__main__":
 
     # # Create image grid (start small for testing)
     print("Creating image grid...")
-    image_grid = bp.create_image_grid(image_size_m=50, pixel_spacing_m=1.0)
+    image_grid = bp.create_image_grid(image_size_m=100, pixel_spacing_m=1.0)
     
     # Perform backprojection (use subset of pulses for testing)
     print("Starting backprojection...")
