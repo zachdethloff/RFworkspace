@@ -1,112 +1,39 @@
 from sarpy.io.phase_history.converter import open_phase_history
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import sarpy.processing
-import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import time
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from multiprocessing import cpu_count
 
-
 def sar_reader(
-        cphd,sicd,rtp
+        cphd
 ):
 
-    range_to_pixel = np.load(rtp)
-
-    tree = ET.parse(sicd)
-    root = tree.getroot()
-
-    # Namespace (important for SICD)
-    ns = {'sicd': 'urn:SICD:1.3.0'}
-
-    position_elem = root.find('.//sicd:Position', ns)
-
-    arp_poly_x = []
-    arp_poly_y = []
-    arp_poly_z = []
-
-    if position_elem is not None:
-        print("Position element found!")
-        
-        # Print all sub-elements to see structure
-        for child in position_elem:
-            print(f"Child tag: {child.tag}")
-            print(f"Child text: {child.text}")
-            
-            # If it's ARPPoly, dive deeper
-            if 'ARPPoly' in child.tag:
-                print("\n=== ARPPoly Structure ===")
-                for axis in child:  # X, Y, Z
-                    coord = axis.tag[-1]
-                    print(f"\nAxis: {coord}")
-                    for coef in axis:
-                        #exponent = coef.get('exponent1', '0')
-                        value = coef.text
-                        if coord == 'X':
-                            arp_poly_x.append(value)
-                        elif coord =='Y':
-                            arp_poly_y.append(value)
-                        else:
-                            arp_poly_z.append(value)
-    else:
-        print("Position element not found!")
-
-    scp_elem = float(root.find('.//sicd:SCPCOA/sicd:SCPTime', ns).text) 
-
-    print(f"X:{len(arp_poly_x)} Y:{len(arp_poly_y)} Z:{len(arp_poly_z)}")
-    print("If previous numbers don't match, quit now!")
-    time.sleep(5)
-
-    # 2. Get center frequency
-    tx_freq = root.find('.//sicd:RadarCollection/sicd:TxFrequency/sicd:Min', ns)
-    center_freq = float(tx_freq.text)  # in Hz
-
-    # 3. Get timing information
-    collect_start = root.find('.//sicd:Timeline/sicd:CollectStart', ns).text.replace('T',' ')
-    collect_duration = float(root.find('.//sicd:Timeline/sicd:CollectDuration', ns).text)
-    print(f'Image collection started at:  {collect_start.replace('Z','')} UTC with a duration of: {collect_duration:.2f} seconds\n')
-
-    # 4. Get SCP (Scene Center Point)
-    scp_ecf = root.find('.//sicd:GeoData/sicd:SCP/sicd:ECF', ns)
-    scp_x = float(scp_ecf.find('sicd:X', ns).text)
-    scp_y = float(scp_ecf.find('sicd:Y', ns).text)
-    scp_z = float(scp_ecf.find('sicd:Z', ns).text)
-
-    # Row direction (typically range)
-    row_uvect = [float(root.find('.//sicd:Grid/sicd:Row/sicd:UVectECF/sicd:X', ns).text), 
-                 float(root.find('.//sicd:Grid/sicd:Row/sicd:UVectECF/sicd:Y', ns).text), 
-                 float(root.find('.//sicd:Grid/sicd:Row/sicd:UVectECF/sicd:Z', ns).text)]
-
-    # Col direction (typically azimuth)
-    col_uvect = [float(root.find('.//sicd:Grid/sicd:Col/sicd:UVectECF/sicd:X', ns).text), 
-                 float(root.find('.//sicd:Grid/sicd:Col/sicd:UVectECF/sicd:Y', ns).text), 
-                 float(root.find('.//sicd:Grid/sicd:Col/sicd:UVectECF/sicd:Z', ns).text)]
-
-    print('Major Image Parameters\n')
-
-    print(f"Center Frequency: {center_freq/1e9} GHz")
-    print(f"SCP: [{scp_x}, {scp_y}, {scp_z}]")
-
-    params = {
-        'arp_poly_x' : np.array(arp_poly_x),
-        'arp_poly_y' : np.array(arp_poly_y),
-        'arp_poly_z' : np.array(arp_poly_z),
-
-        'center_freq' : center_freq,
-        'scp' : np.array([scp_x,scp_y,scp_z]),
-        'collection_start' : collect_start,
-        'collection_duration' : collect_duration,
-        'scp_time' : scp_elem,
-        'row_uvect' : row_uvect,
-        'col_uvect' : col_uvect,
-        'arp_pos_scp': np.array([2477545.1105631641, 4892263.4225086533, 4062226.5405864608]),
-        'arp_vel_scp': np.array([-581.31147127091765, -4749.5161187972426, 6061.8259874043051]),
-        'arp_acc_scp': np.array([-3.7846966040588255, -6.0177938753231066, -5.1127063330333966])
-    }
-
+    # range_to_pixel = np.load(rtp)
     reader = open_phase_history(cphd)
+    data = reader.cphd_meta.to_dict()
+    geo_lib = data['ReferenceGeometry']
+    scene_surface = data['SceneCoordinates']['ReferenceSurface']['Planar']
+    chan_lib = data['Channel']['Parameters']
+    global_lib = data['Global']['TOASwath']
+    coord = ['X','Y','Z']
+    Rcv = data['TxRcv']['RcvParameters']
+
+    
+    params = {
+        'center_freq' : chan_lib[0]['FxC'],
+        'scp' : np.array([geo_lib['SRP']['ECF'][val] for val in coord]),
+        'collection_duration' : geo_lib['SRPDwellTime'],
+        'scp_time' : geo_lib['ReferenceTime'],
+        'row_uvect' : np.array([scene_surface['uIAX'][val] for val in coord]),
+        'col_uvect' : np.array([scene_surface['uIAY'][val] for val in coord]),
+        'sample_rate' : Rcv[0]['SampleRate']
+
+    }
 
     print('reader type = {}'.format(type(reader)))  # see the explicit reader type
 
@@ -116,11 +43,84 @@ def sar_reader(
     signal_data = reader.read_signal_block()
     signal_data = signal_data['spot_0_burst_0']
 
-    return signal_data, params, range_to_pixel
+    return signal_data, params, reader
+
+def pulse_analysis(cphd_data,reader,test):
+    if test == 'single':
+        print('Starting single pulse')
+        test_data = cphd_data[10000, :]
+
+        toa2 = reader.read_pvp_variable('TOA2', index=0, the_range=None)
+        t_spacing = np.linspace(0, toa2, len(test_data))
+        t_us = t_spacing * 1e6
+        powert = 20*np.log10(np.abs(test_data)+1e-10)
+        print(len(test_data),len(powert))
+        print('Power Converted')
+
+        plt.figure(figsize=(12, 5))
+        plt.plot(t_us[::100], powert[::100])
+                #aspect='auto', cmap='gray', vmin=-40, vmax=0)
+        plt.xlabel('Time us')
+        plt.ylabel('Power (dB)')
+        plt.title('Single Pulse Time Domain')
+        #plt.colorbar(label='Magnitude (dB)')
+        plt.savefig('t_domain_pulse.png',dpi=300,bbox_inches='tight')
+
+        # FFT in azimuth direction (along pulses)
+        fft_result = np.fft.fftshift(np.fft.fft(test_data, axis=0), axes=0)
+
+        freqs = np.fft.fftshift(np.fft.fftfreq(len(test_data), 1/params['sample_rate']))
+        freqs_mhz = freqs / 1e6
+
+        power = 20*np.log10(np.abs(fft_result)+1e-10)
+        mask = freqs_mhz > 70
+
+        plt.figure(figsize=(12, 8))
+        plt.plot(freqs_mhz[::100], power[::100])
+                #aspect='auto', cmap='gray', vmin=-40, vmax=0)
+        plt.xlabel('Frequency MHz')
+        plt.ylabel('Power (dB)')
+        plt.title('Single Pulse Frequency Domain')
+        #plt.colorbar(label='Magnitude (dB)')
+        plt.savefig('f_domain_pulse.png',dpi=300,bbox_inches='tight')
+
+        filtered_ph = fft_result.copy()
+        filtered_ph[~mask] = 0
+
+        new_ph = np.fft.ifftshift(filtered_ph)
+        new_ph = np.fft.ifft(new_ph)
+
+        power_filtered = 20*np.log10(np.abs(new_ph)+1e-10)
+        plt.figure(figsize=(12, 5))
+        plt.plot(t_us[::100], power_filtered[::100])
+                #aspect='auto', cmap='gray', vmin=-40, vmax=0)
+        plt.xlabel('Time us')
+        plt.ylabel('Power (dB)')
+        plt.title('Single Pulse Time Domain')
+        #plt.colorbar(label='Magnitude (dB)')
+        plt.savefig('t_domain_pulse_filtered.png',dpi=300,bbox_inches='tight')
+
+        power_filtered = 20*np.log10(np.abs(filtered_ph)+1e-10)
+
+        plt.figure(figsize=(12, 8))
+        plt.plot(freqs_mhz[::100], power_filtered[::100])
+                #aspect='auto', cmap='gray', vmin=-40, vmax=0)
+        plt.xlabel('Frequency MHz')
+        plt.ylabel('Power (dB)')
+        plt.title('Single Pulse Frequency Domain')
+        #plt.colorbar(label='Magnitude (dB)')
+        plt.savefig('f_domain_pulse_filtered.png',dpi=300,bbox_inches='tight')
+
+        print('Single Pulse complete')
+    else:
+        test_data = cphd_data[:1000, 100]
+
+        fft_out = np.fft.fftshift(np.fft.fft(test_data,axis=0),axes=0)
+
     
 
 class SARBackprojection:
-    def __init__(self, cphd_data, sicd_params, range_bins):
+    def __init__(self, cphd_data, params, reader):
         """
         Initialize SAR Backprojection processor
         
@@ -130,7 +130,6 @@ class SARBackprojection:
             sicd_params: Dictionary with SICD parameters
         """
         self.cphd = cphd_data
-        self.range_bins = range_bins
         self.num_pulses, self.num_range_bins = cphd_data.shape
 
         print(self.num_pulses)
@@ -401,37 +400,47 @@ class SARBackprojection:
 if __name__ == "__main__":
     # Load your data
     cphd_file = 'ICEYE_X34_CPHD_SLH_951662092_20251001T181929.cphd'  # Shape: (28318, 34168)
-    range_file = 'range_to_pixel.npy' # Range values in meters
-    sicd = 'ICEYE_X34_SICD_SLH_951662092_20251001T181932.xml'
 
-    cphd_data,sicd_params,range_bins = sar_reader(cphd_file,sicd,range_file)
+    cphd_data,params,reader = sar_reader(cphd_file)
+
+    pulse_analysis(cphd_data,reader,'single')
     
     # Initialize backprojection
-    bp = SARBackprojection(cphd_data, sicd_params, range_bins)
+    # bp = SARBackprojection(cphd_data, params, reader)
+    
+    # # Display
+    # plt.figure(figsize=(12, 8))
+    # plt.plot(20*np.log10(np.abs(fft_result)+1e-10)), 
+    #         #aspect='auto', cmap='gray', vmin=-40, vmax=0)
+    # plt.xlabel('Range Sample')
+    # plt.ylabel('Doppler Frequency')
+    # plt.title('Range-Doppler Map (First 1000 Pulses)')
+    # #plt.colorbar(label='Magnitude (dB)')
+    # plt.savefig('ffttest',dpi=150,bbox_inches='tight')
 
     # # Create image grid (start small for testing)
-    print("Creating image grid...")
-    image_grid = bp.create_image_grid(image_size_m=100, pixel_spacing_m=1.0)
+    # print("Creating image grid...")
+    # image_grid = bp.create_image_grid(image_size_m=500, pixel_spacing_m=1.0)
     
-    # Perform backprojection (use subset of pulses for testing)
-    print("Starting backprojection...")
-    pulse_subset = range(0, 28318, 2)  # Use every 10th pulse for faster testing
-    image = bp.backproject(image_grid, None, n_workers=3, use_process=False)
+    # # Perform backprojection (use subset of pulses for testing)
+    # print("Starting backprojection...")
+    # pulse_subset = range(0, 28318, 2)  # Use every 10th pulse for faster testing
+    # image = bp.backproject(image_grid, None, n_workers=3, use_process=False)
 
-    # Check if trajectory is reasonable
-    velocity = np.diff(bp.sensor_positions, axis=0) / np.diff(bp.pulse_times)[:, np.newaxis]
-    speed = np.linalg.norm(velocity, axis=1)
-    print(f"Platform speed: {np.mean(speed):.1f} m/s (should be ~7500 m/s for satellite)")
+    # # Check if trajectory is reasonable
+    # velocity = np.diff(bp.sensor_positions, axis=0) / np.diff(bp.pulse_times)[:, np.newaxis]
+    # speed = np.linalg.norm(velocity, axis=1)
+    # print(f"Platform speed: {np.mean(speed):.1f} m/s (should be ~7500 m/s for satellite)")
     
-    # Display result
-    plt.figure(figsize=(10, 8))
-    plt.imshow(np.abs(image), cmap='gray', aspect='auto')
-    plt.colorbar(label='Magnitude')
-    plt.title('SAR Image - Backprojection Result')
-    plt.xlabel('Range')
-    plt.ylabel('Azimuth')
-    plt.tight_layout()
-    plt.savefig('sar_backprojection_result.png', dpi=150)
-    plt.show()
+    # # Display result
+    # plt.figure(figsize=(10, 8))
+    # plt.imshow(np.abs(image), cmap='gray', aspect='auto')
+    # plt.colorbar(label='Magnitude')
+    # plt.title('SAR Image - Backprojection Result')
+    # plt.xlabel('Range')
+    # plt.ylabel('Azimuth')
+    # plt.tight_layout()
+    # plt.savefig('sar_backprojection_result.png', dpi=150)
+    # plt.show()
     
-    print("Backprojection complete!")
+    # print("Backprojection complete!")
