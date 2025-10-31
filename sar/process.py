@@ -45,19 +45,42 @@ def sar_reader(
 
     return signal_data, params, reader
 
-def pulse_analysis(cphd_data,reader,test):
+def pulse_analysis(cphd_data,reader,test,pulse_idx):
+
+    print(f"NumVectors (pulses): 28318")
+    print(f"NumSamples (range bins): 34168")
+    print(f"Does shape match (pulses, ranges)? {cphd_data.shape == (28318, 34168)}")
+
+    toa2 = reader.read_pvp_variable('TOA2', index=0, the_range=None)
     if test == 'single':
         print('Starting single pulse')
-        test_data = cphd_data[10000, :]
-
-        toa2 = reader.read_pvp_variable('TOA2', index=0, the_range=None)
+        test_data = cphd_data[pulse_idx, :]
+        toa2 = toa2[pulse_idx]
         t_spacing = np.linspace(0, toa2, len(test_data))
         t_us = t_spacing * 1e6
-        powert = 20*np.log10(np.abs(test_data)+1e-10)
-        print(len(test_data),len(powert))
-        print('Power Converted')
+        maskt = t_us < 50
+
+        freqs = np.fft.fftshift(np.fft.fftfreq(len(test_data), 1/params['sample_rate']))
+        freqs_mhz = freqs / 1e6
+        powerf = 20*np.log10(np.abs(test_data)+1e-10)
+
+        print('Starting Plots')
 
         plt.figure(figsize=(12, 5))
+        plt.plot(freqs_mhz[::100], powerf[::100])
+                #aspect='auto', cmap='gray', vmin=-40, vmax=0)
+        plt.xlabel('Frequency Mhz')
+        plt.ylabel('Power (dB)')
+        plt.title('Single Pulse Frequency Domain')
+        #plt.colorbar(label='Magnitude (dB)')
+        plt.savefig('f_domain_pulse.png',dpi=300,bbox_inches='tight')
+
+        # FFT in azimuth direction (along pulses)
+        fft_result = np.fft.fftshift(np.fft.fft(test_data, axis=0), axes=0)
+        powert = 20*np.log10(np.abs(fft_result)+1e-10)
+        powert[~maskt] = 0
+
+        plt.figure(figsize=(12, 8))
         plt.plot(t_us[::100], powert[::100])
                 #aspect='auto', cmap='gray', vmin=-40, vmax=0)
         plt.xlabel('Time us')
@@ -66,56 +89,74 @@ def pulse_analysis(cphd_data,reader,test):
         #plt.colorbar(label='Magnitude (dB)')
         plt.savefig('t_domain_pulse.png',dpi=300,bbox_inches='tight')
 
-        # FFT in azimuth direction (along pulses)
-        fft_result = np.fft.fftshift(np.fft.fft(test_data, axis=0), axes=0)
-
-        freqs = np.fft.fftshift(np.fft.fftfreq(len(test_data), 1/params['sample_rate']))
-        freqs_mhz = freqs / 1e6
-
-        power = 20*np.log10(np.abs(fft_result)+1e-10)
-        mask = freqs_mhz > 70
-
-        plt.figure(figsize=(12, 8))
-        plt.plot(freqs_mhz[::100], power[::100])
-                #aspect='auto', cmap='gray', vmin=-40, vmax=0)
-        plt.xlabel('Frequency MHz')
-        plt.ylabel('Power (dB)')
-        plt.title('Single Pulse Frequency Domain')
-        #plt.colorbar(label='Magnitude (dB)')
-        plt.savefig('f_domain_pulse.png',dpi=300,bbox_inches='tight')
-
-        filtered_ph = fft_result.copy()
-        filtered_ph[~mask] = 0
-
-        new_ph = np.fft.ifftshift(filtered_ph)
-        new_ph = np.fft.ifft(new_ph)
-
-        power_filtered = 20*np.log10(np.abs(new_ph)+1e-10)
-        plt.figure(figsize=(12, 5))
-        plt.plot(t_us[::100], power_filtered[::100])
-                #aspect='auto', cmap='gray', vmin=-40, vmax=0)
-        plt.xlabel('Time us')
-        plt.ylabel('Power (dB)')
-        plt.title('Single Pulse Time Domain')
-        #plt.colorbar(label='Magnitude (dB)')
-        plt.savefig('t_domain_pulse_filtered.png',dpi=300,bbox_inches='tight')
-
-        power_filtered = 20*np.log10(np.abs(filtered_ph)+1e-10)
-
-        plt.figure(figsize=(12, 8))
-        plt.plot(freqs_mhz[::100], power_filtered[::100])
-                #aspect='auto', cmap='gray', vmin=-40, vmax=0)
-        plt.xlabel('Frequency MHz')
-        plt.ylabel('Power (dB)')
-        plt.title('Single Pulse Frequency Domain')
-        #plt.colorbar(label='Magnitude (dB)')
-        plt.savefig('f_domain_pulse_filtered.png',dpi=300,bbox_inches='tight')
 
         print('Single Pulse complete')
     else:
-        test_data = cphd_data[:1000, 100]
+        print('Starting batch test, all range bins')
+        test_data = cphd_data[:pulse_idx, :]
+        test_power = 20*np.log10(np.abs(test_data)+1e-10)
+        low = np.percentile(test_power,20)
+        high = np.percentile(test_power,99.9)
+        range_check = 12000
 
-        fft_out = np.fft.fftshift(np.fft.fft(test_data,axis=0),axes=0)
+        fft_2d = np.fft.fftshift(np.fft.fft2(test_data))
+        fft_check = np.fft.fftshift(np.fft.fft(test_data,axis=1),axes=1)
+        fft_check = np.fft.fftshift(np.fft.fft(fft_check,axis=0),axes=0)
+        rescale_2d = np.abs(fft_2d)**.5
+        rescale_check = np.abs(fft_check)**.5
+
+        print('Starting Plots')
+        plt.figure()
+        plt.imshow(20*np.log10(np.abs(test_data)+1e-10),aspect='auto',cmap='gray',vmin=low,vmax=high)
+        plt.xlabel('Range')
+        plt.title(f'Pure Test Data Up To Pulse No. {pulse_idx}')
+        plt.ylabel('Pulse Number')
+        plt.savefig('Uncompressed.png',dpi=300,bbox_inches='tight')
+
+
+        plt.figure(figsize=(12,8))
+        plt.plot(np.abs(fft_2d[:,range_check]))
+        plt.xlabel('Pulse Number')
+        plt.title(f'Doppler at Range bin {range_check} for pulses up to {pulse_idx}')
+        plt.ylabel('Magnitude (dB)')
+        plt.savefig('Single_Range.png',dpi=300,bbox_inches='tight')
+
+
+        vmin = np.percentile(rescale_2d,5)
+        vmax = np.percentile(rescale_2d,99.9)
+
+        plt.figure(figsize=(12,8))
+        plt.imshow(rescale_2d,aspect='auto',cmap='gray',vmin=vmin,vmax=vmax)
+        plt.xlabel('Range Sample')
+        plt.ylabel('Pulse Number')
+        plt.title(f'Range-Doppler Map (First {pulse_idx} Pulses)')
+        plt.colorbar(label='Magnitude (dB)')
+        plt.savefig('2d_comp.png',dpi=300,bbox_inches='tight')
+
+        plt.figure(figsize=(12,8))
+        plt.imshow(rescale_check,aspect='auto',cmap='gray',vmin=vmin,vmax=vmax)
+        plt.xlabel('Range Sample')
+        plt.ylabel('Pulse Number')
+        plt.title(f'Range-Doppler Map (First {pulse_idx} Pulses)')
+        plt.colorbar(label='Magnitude (dB)')
+        plt.savefig('2d_check.png',dpi=300,bbox_inches='tight')
+
+
+        doppler_slice = slice(1500, 3500)  # Around the peaks
+        range_slice = slice(15000, 20000)  # Around bin 17000
+
+        plt.figure(figsize=(12, 8))
+        plt.imshow(rescale_2d[doppler_slice, range_slice], 
+                aspect='auto', cmap='hot', vmin=vmin, vmax=vmax)
+        plt.xlabel('Range Sample')
+        plt.ylabel('Pulse Number')
+        plt.title('Zoomed Range-Doppler Map (Strong Signal Region)')
+        plt.colorbar(label='Power (dB)')
+        plt.savefig('Azimuth_zoom.png',dpi=300,bbox_inches='tight')
+
+
+
+        print('Finished Plotting')
 
     
 
@@ -403,20 +444,11 @@ if __name__ == "__main__":
 
     cphd_data,params,reader = sar_reader(cphd_file)
 
-    pulse_analysis(cphd_data,reader,'single')
+    pulse_analysis(cphd_data,reader,'all',4000)
     
     # Initialize backprojection
     # bp = SARBackprojection(cphd_data, params, reader)
-    
-    # # Display
-    # plt.figure(figsize=(12, 8))
-    # plt.plot(20*np.log10(np.abs(fft_result)+1e-10)), 
-    #         #aspect='auto', cmap='gray', vmin=-40, vmax=0)
-    # plt.xlabel('Range Sample')
-    # plt.ylabel('Doppler Frequency')
-    # plt.title('Range-Doppler Map (First 1000 Pulses)')
-    # #plt.colorbar(label='Magnitude (dB)')
-    # plt.savefig('ffttest',dpi=150,bbox_inches='tight')
+
 
     # # Create image grid (start small for testing)
     # print("Creating image grid...")
