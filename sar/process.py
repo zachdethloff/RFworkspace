@@ -146,7 +146,7 @@ def pulse_analysis(cphd_data,reader,test,pulse_idx):
         range_slice = slice(15000, 20000)  # Around bin 17000
 
         plt.figure(figsize=(12, 8))
-        plt.imshow(rescale_2d[doppler_slice, range_slice], 
+        plt.imshow(rescale_2d[:, range_slice], 
                 aspect='auto', cmap='hot', vmin=vmin, vmax=vmax)
         plt.xlabel('Range Sample')
         plt.ylabel('Pulse Number')
