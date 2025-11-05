@@ -47,10 +47,6 @@ def sar_reader(
 
 def pulse_analysis(cphd_data,reader,test,pulse_idx):
 
-    print(f"NumVectors (pulses): 28318")
-    print(f"NumSamples (range bins): 34168")
-    print(f"Does shape match (pulses, ranges)? {cphd_data.shape == (28318, 34168)}")
-
     toa2 = reader.read_pvp_variable('TOA2', index=0, the_range=None)
     if test == 'single':
         print('Starting single pulse')
@@ -97,13 +93,13 @@ def pulse_analysis(cphd_data,reader,test,pulse_idx):
         test_power = 20*np.log10(np.abs(test_data)+1e-10)
         low = np.percentile(test_power,20)
         high = np.percentile(test_power,99.9)
-        range_check = 12000
+        range_check = [1000,2000,3000]
 
         fft_2d = np.fft.fftshift(np.fft.fft2(test_data))
-        fft_check = np.fft.fftshift(np.fft.fft(test_data,axis=1),axes=1)
+        fft_check = np.fft.ifftshift(np.fft.ifft(test_data,axis=1),axes=1)
         fft_check = np.fft.fftshift(np.fft.fft(fft_check,axis=0),axes=0)
         rescale_2d = np.abs(fft_2d)**.5
-        rescale_check = np.abs(fft_check)**.5
+        # rescale_check = np.abs(fft_check)**.5
 
         print('Starting Plots')
         plt.figure()
@@ -115,11 +111,15 @@ def pulse_analysis(cphd_data,reader,test,pulse_idx):
 
 
         plt.figure(figsize=(12,8))
-        plt.plot(np.abs(fft_2d[:,range_check]))
-        plt.xlabel('Pulse Number')
-        plt.title(f'Doppler at Range bin {range_check} for pulses up to {pulse_idx}')
+        #plt.plot(np.abs(fft_2d[:,range_check]))
+        plt.plot(np.abs(fft_2d[range_check[0],:])**.5,label=range_check[0])
+        plt.plot(np.abs(fft_2d[range_check[1],:])**.5,label=range_check[1])
+        plt.plot(np.abs(fft_2d[range_check[2],:])**.5,label=range_check[2])
+        plt.xlabel('Range Number')
+        plt.title(f'All Ranges for Pulses {range_check}')
         plt.ylabel('Magnitude (dB)')
-        plt.savefig('Single_Range.png',dpi=300,bbox_inches='tight')
+        plt.legend()
+        plt.savefig('Single_Pulse.png',dpi=300,bbox_inches='tight')
 
 
         vmin = np.percentile(rescale_2d,5)
@@ -133,21 +133,21 @@ def pulse_analysis(cphd_data,reader,test,pulse_idx):
         plt.colorbar(label='Magnitude (dB)')
         plt.savefig('2d_comp.png',dpi=300,bbox_inches='tight')
 
-        plt.figure(figsize=(12,8))
-        plt.imshow(rescale_check,aspect='auto',cmap='gray',vmin=vmin,vmax=vmax)
-        plt.xlabel('Range Sample')
-        plt.ylabel('Pulse Number')
-        plt.title(f'Range-Doppler Map (First {pulse_idx} Pulses)')
-        plt.colorbar(label='Magnitude (dB)')
-        plt.savefig('2d_check.png',dpi=300,bbox_inches='tight')
+        # plt.figure(figsize=(12,8))
+        # plt.imshow(rescale_check,aspect='auto',cmap='gray',vmin=vmin,vmax=vmax)
+        # plt.xlabel('Range Sample')
+        # plt.ylabel('Pulse Number')
+        # plt.title(f'Range-Doppler Map (First {pulse_idx} Pulses)')
+        # plt.colorbar(label='Magnitude (dB)')
+        # plt.savefig('2d_check.png',dpi=300,bbox_inches='tight')
 
 
-        doppler_slice = slice(1500, 3500)  # Around the peaks
-        range_slice = slice(15000, 20000)  # Around bin 17000
+        doppler_slice = slice(1000, 4000)  # Around the peaks
+        range_slice = slice(10000, 20000)  # Around bin 17000
 
         plt.figure(figsize=(12, 8))
         plt.imshow(rescale_2d[:, range_slice], 
-                aspect='auto', cmap='hot', vmin=vmin, vmax=vmax)
+                aspect='auto', cmap='grey', vmin=vmin, vmax=vmax)
         plt.xlabel('Range Sample')
         plt.ylabel('Pulse Number')
         plt.title('Zoomed Range-Doppler Map (Strong Signal Region)')
@@ -170,108 +170,39 @@ class SARBackprojection:
             range_bins: Range values for each bin (meters)
             sicd_params: Dictionary with SICD parameters
         """
-        self.cphd = cphd_data
+        c = 3e8
+        self.cphd = np.fft.ifft(cphd_data,axis=1)
         self.num_pulses, self.num_range_bins = cphd_data.shape
-
-        print(self.num_pulses)
-
-        # From SICD
-        row_ss = 0.58445480567920705  # Sample spacing in meters
-
-        # Starting range of image
-        range_start = range_bins[0]
-
-        # Generate full range array using SICD data instead of interpolation
-        full_range_bins = range_start + np.arange(self.num_range_bins) * row_ss
-
-        if len(full_range_bins) == self.num_range_bins:
-            self.range_bins = full_range_bins
-            print("Interpolated Ranges")
         
-        # Extract SICD parameters
-        self.sicd_params = sicd_params
-        self.arp_poly_x = sicd_params['arp_poly_x'].astype(float) # ARP X Polynomial
-        self.arp_poly_y = sicd_params['arp_poly_y'].astype(float) # ARP Y Polynomial
-        self.arp_poly_z = sicd_params['arp_poly_z'].astype(float) # ARP Z Polynomial
-        self.center_freq = sicd_params['center_freq'] # Frequency Center
-        self.wavelength = 3e8 / self.center_freq
-        self.scp = sicd_params['scp']  # Scene center point
-        self.collect_start = sicd_params['collection_start'] 
-        self.collect_duration = sicd_params['collection_duration']
-        self.scp_time = sicd_params['scp_time'] # Time at SCP
-        self.row_uvect = sicd_params['row_uvect'] # Pixel range spacing
-        self.col_uvect = sicd_params['col_uvect'] # Pixel azimuth spacing
-        self.arp_pos = sicd_params['arp_pos_scp'] # Position per pulse
-        self.arp_vel = sicd_params['arp_vel_scp'] # Velocity per pulse
-        self.arp_acc = sicd_params['arp_acc_scp'] # Acceleration per pulse
+        self.params = params
+        self.params = params['sample_rate']
+        self.center_freq = params['center_freq'] # Frequency Center
+        self.wavelength = c / self.center_freq
+        self.scp = params['scp']  # Scene center point
+        self.collect_duration = params['collection_duration']
+        self.scp_time = params['scp_time'] # Time at SCP
+        self.row_uvect = params['row_uvect'] # Pixel range spacing
+        self.col_uvect = params['col_uvect'] # Pixel azimuth spacing
+
+        self.sensor_positions = reader.read_pvp_variable('TxPos', index=0,the_range=None)
+        self.pulse_times = reader.read_pvp_variable('TxTime',index=0,the_range=None)
+
+        toa_min = 0.0
+        toa_max = reader.read_pvp_variable('TOA2',index=0,the_range=None)[0]
+        srp_pos = reader.read_pvp_variable('SRPPos',index=0,the_range=None)
+        ref_pulse_idx = len(self.sensor_positions) // 2
+        ref_range = np.linalg.norm(self.sensor_positions[ref_pulse_idx] - srp_pos[ref_pulse_idx])
+        toa_samples = np.linspace(toa_min,toa_max,self.num_range_bins)
+        self.range_bins = ref_range + (c * toa_samples/2)
+        print('Time of Arrival: ', toa_max)
+
+        print(f"Range bins: {self.range_bins[0]:.1f} to {self.range_bins[-1]:.1f} m")
+        print(f"Sensor to SCP range: ~560,000 m")
+        print(f"Do they overlap? {self.range_bins[0] < 560000 < self.range_bins[-1]}")
+
+
+        print("CPHD data consolidated")
         
-        # Compute time for each pulse
-        # self.pulse_times = np.linspace(0, self.collect_duration, self.num_pulses)
-
-        pulse_indices = np.arange(self.num_pulses)
-        self.pulse_times = pulse_indices / 6261.785
-        print(f"Pulse times: {self.pulse_times[0]:.6f} to {self.pulse_times[-1]:.6f} seconds")
-        print(f"Should span: 0 to 4.521 seconds")
-        
-        # Precompute sensor positions for all pulses
-        self.sensor_positions = self._compute_sensor_positions()
-        self.diagnostic_checks('Mag')
-
-    def diagnostic_checks(self,check):
-        if check == 'Mag':
-            # Look at the raw CPHD to find strong returns
-            max_per_pulse = np.max(np.abs(self.cphd), axis=1)
-            strongest_pulse = np.argmax(max_per_pulse)
-            strongest_range_bin = np.argmax(np.abs(self.cphd[strongest_pulse, :]))
-
-            print(f"Magnitude of Strongest Pulse: {np.abs(self.cphd[strongest_pulse, strongest_range_bin]):.1f}")
-
-            target_range = self.range_bins[strongest_range_bin]  # Should work now!
-            print(f"Strongest scatterer at range: {target_range:.1f} m")
-        else:
-
-            print(f"Full range bins: {self.range_bins[0]:.1f} to {self.range_bins[-1]:.1f} m")
-            print(f"Range span: {self.range_bins[-1] - self.range_bins[0]:.1f} m")
-            print(f"Number of bins: {len(self.range_bins)}")
-
-            # Verify against your geometry
-            print(f"\nGeometry check:")
-            print(f"Expected slant range at SCP: 560739 m")
-            print(f"Range bins cover: {self.range_bins[0]:.1f} to {self.range_bins[-1]:.1f} m")
-
-            scp_time = 2.2606971263885498
-            t_rel = scp_time - self.scp_time  # Should be 0!
-            print('Relative T: ', t_rel)
-
-            pos_x = np.polyval(self.arp_poly_x[::-1], t_rel)
-            pos_y = np.polyval(self.arp_poly_y[::-1], t_rel)
-            pos_z = np.polyval(self.arp_poly_z[::-1], t_rel)
-
-            print(f"ARPPoly at t=0: [{pos_x}, {pos_y}, {pos_z}]")
-            print(f"SCPCOA ARPPos:  [2477545.11, 4892263.42, 4062226.54]")
-        
-    def _compute_sensor_positions(self):
-        """Compute sensor position for each pulse using ARPPoly"""
-        positions = np.zeros((self.num_pulses, 3)) # Position matrix for each pulse
-
-        if 'arp_pos_scp' in self.sicd_params.keys():
-            print("Taylor Approximation Method Selected")
-            
-            # Taylor Series approximation of each pulse
-            for i, t in enumerate(self.pulse_times):
-                dt = t - self.scp_time
-                positions[i] = self.arp_pos + self.arp_vel * dt + 0.5 * self.arp_acc * dt**2
-        else:
-
-            
-            for i, t in enumerate(self.pulse_times):
-                # Evaluate polynomial manually
-                relt = t - self.scp_time
-                positions[i, 0] = np.polyval(self.arp_poly_x[::-1], relt)  # X
-                positions[i, 1] = np.polyval(self.arp_poly_y[::-1], relt)  # Y
-                positions[i, 2] = np.polyval(self.arp_poly_z[::-1], relt)  # Z
-                
-        return positions
     
     def create_image_grid(self, image_size_m=1000, pixel_spacing_m=1.0):
         """
@@ -294,19 +225,7 @@ class SARBackprojection:
         # Get unit vectors from SICD (if available)
         row_uvect = self.row_uvect
         col_uvect = self.col_uvect
-        
-        if row_uvect is None or col_uvect is None:
-            # Fallback: compute from geometry 
-            avg_sensor_pos = np.mean(self.sensor_positions, axis=0)
-            look_vec = avg_sensor_pos - self.scp
-            look_vec = look_vec / np.linalg.norm(look_vec)
-            ground_normal = self.scp / np.linalg.norm(self.scp)
-            range_dir = np.cross(ground_normal, look_vec)
-            range_dir = range_dir / np.linalg.norm(range_dir)
-            az_dir = np.cross(range_dir, ground_normal)
-            az_dir = az_dir / np.linalg.norm(az_dir)
-            row_uvect = range_dir
-            col_uvect = az_dir
+    
         
         # Build 3D grid using SICD vectors: Starting position + Row Coordinate * Row Vector + Column Coordinate * Column Vector
         X_ecef = self.scp[0] + Row_grid * row_uvect[0] + Col_grid * col_uvect[0]
@@ -447,24 +366,26 @@ if __name__ == "__main__":
     pulse_analysis(cphd_data,reader,'all',4000)
     
     # Initialize backprojection
-    # bp = SARBackprojection(cphd_data, params, reader)
+    bp = SARBackprojection(cphd_data, params, reader)
 
 
     # # Create image grid (start small for testing)
-    # print("Creating image grid...")
-    # image_grid = bp.create_image_grid(image_size_m=500, pixel_spacing_m=1.0)
+    print("Creating image grid...")
+    #image_grid = bp.create_image_grid(image_size_m=1000, pixel_spacing_m=1.0)
+    test_grid = (np.array([[params['scp'][0]]]), 
+            np.array([[params['scp'][1]]]), 
+            np.array([[params['scp'][2]]]))
+
+    image = bp.backproject(test_grid, pulse_subset=range(0, 4000))
+    print(f"SCP pixel magnitude: {np.abs(image[0,0]):.1f}")
+    print("Image grid successfully constructed")
     
     # # Perform backprojection (use subset of pulses for testing)
     # print("Starting backprojection...")
-    # pulse_subset = range(0, 28318, 2)  # Use every 10th pulse for faster testing
-    # image = bp.backproject(image_grid, None, n_workers=3, use_process=False)
+    # pulse_subset = range(0, 4000)  # Use every 10th pulse for faster testing
+    # image = bp.backproject(image_grid, pulse_subset, n_workers=3, use_process=False)
 
-    # # Check if trajectory is reasonable
-    # velocity = np.diff(bp.sensor_positions, axis=0) / np.diff(bp.pulse_times)[:, np.newaxis]
-    # speed = np.linalg.norm(velocity, axis=1)
-    # print(f"Platform speed: {np.mean(speed):.1f} m/s (should be ~7500 m/s for satellite)")
-    
-    # # Display result
+    # # # Display result
     # plt.figure(figsize=(10, 8))
     # plt.imshow(np.abs(image), cmap='gray', aspect='auto')
     # plt.colorbar(label='Magnitude')
