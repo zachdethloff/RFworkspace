@@ -43,6 +43,19 @@ def sar_reader(
     signal_data = reader.read_signal_block()
     signal_data = signal_data['spot_0_burst_0']
 
+    # Check BEFORE IFFT
+    print(f"Original CPHD magnitude range: {np.min(np.abs(signal_data)):.3f} to {np.max(np.abs(signal_data)):.3f}")
+    print(f"Original mean magnitude: {np.mean(np.abs(signal_data)):.3f}")
+
+    # Check AFTER IFFT
+    cphd_after_ifft = np.fft.ifft(signal_data, axis=1)
+    print(f"After IFFT magnitude range: {np.min(np.abs(cphd_after_ifft)):.3f} to {np.max(np.abs(cphd_after_ifft)):.3f}")
+    print(f"After IFFT mean magnitude: {np.mean(np.abs(cphd_after_ifft)):.3f}")
+
+    # Maybe you need FFT not IFFT?
+    cphd_after_fft = np.fft.fft(signal_data, axis=1)
+    print(f"After FFT magnitude range: {np.min(np.abs(cphd_after_fft)):.3f} to {np.max(np.abs(cphd_after_fft)):.3f}")
+
     return signal_data, params, reader
 
 def pulse_analysis(cphd_data,reader,test,pulse_idx):
@@ -196,9 +209,25 @@ class SARBackprojection:
         self.range_bins = ref_range + (c * toa_samples/2)
         print('Time of Arrival: ', toa_max)
 
+        # 1. Check range bins coverage
         print(f"Range bins: {self.range_bins[0]:.1f} to {self.range_bins[-1]:.1f} m")
-        print(f"Sensor to SCP range: ~560,000 m")
-        print(f"Do they overlap? {self.range_bins[0] < 560000 < self.range_bins[-1]}")
+        print(f"Range bin spacing: {np.mean(np.diff(self.range_bins)):.3f} m")
+
+        # 2. Check what range the SCP is at
+        scp_range = np.linalg.norm(self.sensor_positions[len(self.sensor_positions)//2] - self.scp)
+        print(f"Range to SCP from middle pulse: {scp_range:.1f} m")
+
+        # 3. Check if SCP range is within range_bins
+        print(f"Is SCP in range bins? {self.range_bins[0] < scp_range < self.range_bins[-1]}")
+
+        # 4. Check CPHD after IFFT
+        print(f"CPHD shape after IFFT: {self.cphd.shape}")
+        print(f"CPHD dtype: {self.cphd.dtype}")
+        print(f"CPHD magnitude range: {np.min(np.abs(self.cphd)):.3f} to {np.max(np.abs(self.cphd)):.3f}")
+
+        # 5. Check a single range bin across all pulses
+        mid_range_bin = self.cphd.shape[1] // 2
+        print(f"Middle range bin magnitude across pulses: {np.mean(np.abs(self.cphd[:, mid_range_bin])):.3f}")
 
 
         print("CPHD data consolidated")
@@ -363,22 +392,16 @@ if __name__ == "__main__":
 
     cphd_data,params,reader = sar_reader(cphd_file)
 
-    pulse_analysis(cphd_data,reader,'all',4000)
+    #pulse_analysis(cphd_data,reader,'all',4000)
     
     # Initialize backprojection
-    bp = SARBackprojection(cphd_data, params, reader)
+    #bp = SARBackprojection(cphd_data, params, reader)
 
 
     # # Create image grid (start small for testing)
-    print("Creating image grid...")
+    #print("Creating image grid...")
     #image_grid = bp.create_image_grid(image_size_m=1000, pixel_spacing_m=1.0)
-    test_grid = (np.array([[params['scp'][0]]]), 
-            np.array([[params['scp'][1]]]), 
-            np.array([[params['scp'][2]]]))
-
-    image = bp.backproject(test_grid, pulse_subset=range(0, 4000))
-    print(f"SCP pixel magnitude: {np.abs(image[0,0]):.1f}")
-    print("Image grid successfully constructed")
+    #print("Image grid successfully constructed")
     
     # # Perform backprojection (use subset of pulses for testing)
     # print("Starting backprojection...")
